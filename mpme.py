@@ -53,7 +53,23 @@ class Song:
   @classmethod
   def from_string(cls, string):
     if string := cls.clean_string(string):
-      return cls(*string.split(','))
+      try:
+        return cls(*string.split(','))
+      except TypeError:
+        pass
+
+  @classmethod
+  def from_file(cls, path):
+    eyed3_file = eyed3.load(path)
+    name = path.split('/')[-1].replace(
+      f'.{AUDIO_FORMAT}', '')
+    if not eyed3_file:
+      return cls(name=name, artist='')
+
+    # Use album as MP3 Players organise these better
+    artist = eyed3_file.tag.album
+    name = name.replace(f',{artist}' or '', '')
+    return cls(name=name, artist=artist)
 
   @staticmethod
   def clean_string(string):
