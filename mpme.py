@@ -196,13 +196,12 @@ class ExternalDiskExporter(Exporter):
     while True:
       available_disks = list(
         set(os.listdir(VOLUMES_DIR)) - IGNORE_DISKS)
-      if available_disks:
-        break
-      time.sleep(1)
-    display_disks = '\n'.join(
-      f'({index + 1}) {disk}'
-      for index, disk in enumerate(available_disks))
-    while True:
+      if not available_disks:
+        time.sleep(1)
+        continue
+      display_disks = '\n'.join(
+        f'({index + 1}) {disk}'
+        for index, disk in enumerate(available_disks))
       try:
         choice = input(f'Which disk?\n {display_disks}\n:')
         return available_disks[int(choice) - 1]
