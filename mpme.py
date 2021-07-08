@@ -1,25 +1,31 @@
 import abc
 import dataclasses
+import eyed3
+import os
+import platform
 import shutil
 import subprocess
 import sys
 import time
-import os
-import eyed3
 
 
 #################
 ### CONSTANTS ###
 #################
-
+PLATFORM = platform.platform()
 BAD_SONG_CHARS = ('\'', '"', '\n')
 MISC_SONG_FOLDER_NAME = 'OTHER'
 TMP_DOWNLOAD_DIR = '__downloads__'
 AUDIO_FORMAT = 'mp3'
 IGNORE_DISKS = {'Macintosh HD'}
-VOLUMES_DIR = '/Volumes'
+MAC_VOLUMES_DIR = '/Volumes'
+LINUX_MOUNT_DIR = '/mnt'
 BACKUP_DIR = 'backup'
 
+MAC_PLATFORM_PART = 'macOS'
+LINUX_PLATFORM_PART = 'Linux'
+
+UNSUPPORTED_OS_MSG = 'Windows? Fuck off'
 
 ###############
 ### HELPERS ###
@@ -185,17 +191,26 @@ class ExternalDiskExporter(Exporter):
 
   def export(self):
     disk_name = self.find_disks()
+    if LINUX_PLATFORM_PART in PLATFORM:
+      subprocess.check_call(['mount', f'/dev/{disk_name}', LINUX_MOUNT_DIR])
+      path = LINUX_MOUNT_DIR
+    elif MAC_PLATFORM_PART in PLATFORM:
+      path = os.path.join(MAC_VOLUMES_DIR, disk_name)
+    else:
+      raise Exception(UNSUPPORTED_OS_MSG)
     print('Exporting songs to disk...')
-    shutil.copytree(
-      TMP_DOWNLOAD_DIR,
-      os.path.join(VOLUMES_DIR, disk_name),
-      dirs_exist_ok=True)
+    shutil.copytree(TMP_DOWNLOAD_DIR, path, dirs_exist_ok=True)
 
   def find_disks(self):
     mprint('Searching for disks...')
     while True:
-      available_disks = list(
-        set(os.listdir(VOLUMES_DIR)) - IGNORE_DISKS)
+      if LINUX_PLATFORM_PART in PLATFORM:
+        available_disks = {disk for disk in os.listdir('/dev') if 'sd' in disk}
+      elif MAC_PLATFORM_PART in PLATFORM:
+        available_disks = set(os.listdir(MAC_VOLUMES_DIR))
+      else:
+        raise Exception(UNSUPPORTED_OS_MSG)
+      available_disks = list(available_disks - IGNORE_DISKS)
       if not available_disks:
         time.sleep(1)
         continue
