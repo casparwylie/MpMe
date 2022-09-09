@@ -21,7 +21,7 @@ IGNORE_DISKS = {'Macintosh HD'}
 MAC_VOLUMES_DIR = '/Volumes'
 LINUX_MOUNT_DIR = '/mnt'
 BACKUP_DIR = 'backup'
-
+RETRY_ATTEMPTS = 3
 MAC_PLATFORM_PART = 'macOS'
 LINUX_PLATFORM_PART = 'Linux'
 
@@ -161,13 +161,21 @@ class Fetcher:
   def fetch_song(self, song):
     mprint(f'Fetching {song}...')
     path = os.path.join(TMP_DOWNLOAD_DIR, song.full_name)
-    subprocess.check_output([
-      'youtube-dl',
-      '-x',
-      '-o', f'{path}.%(ext)s',
-      f'ytsearch:{song.search_term}',
-      '--audio-format', AUDIO_FORMAT
-    ])
+    for attempts in range(RETRY_ATTEMPTS):
+      try:
+        subprocess.check_output([
+          'youtube-dl',
+          '-x',
+          '-o', f'{path}.%(ext)s',
+          f'ytsearch:{song.search_term}',
+          '--audio-format', AUDIO_FORMAT
+        ])
+        break
+      except Exception as error:
+        mprint(f'Issue: {error}')
+        mprint(f'Retrying {attempt + 1}/{RETRY_ATTEMPTS}')
+    else:
+      mprint('Unable to fetch song. Skipping...')
 
   def tag_song(self, song):
     eyed3_file = eyed3.load(
