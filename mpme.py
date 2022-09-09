@@ -154,14 +154,14 @@ class Fetcher:
   def fetch_all_songs(self):
     mprint(f'Fetching {len(self.song_list.songs)} songs...')
     for song in self.song_list.songs:
-      self.fetch_song(song)
-      self.tag_song(song)
+      if success := self.fetch_song(song):
+        self.tag_song(song)
     mprint('Done!')
 
   def fetch_song(self, song):
     mprint(f'Fetching {song}...')
     path = os.path.join(TMP_DOWNLOAD_DIR, song.full_name)
-    for attempts in range(RETRY_ATTEMPTS):
+    for attempt in range(RETRY_ATTEMPTS):
       try:
         subprocess.check_output([
           'youtube-dl',
@@ -176,6 +176,8 @@ class Fetcher:
         mprint(f'Retrying {attempt + 1}/{RETRY_ATTEMPTS}')
     else:
       mprint('Unable to fetch song. Skipping...')
+      return
+    return True
 
   def tag_song(self, song):
     eyed3_file = eyed3.load(
@@ -292,6 +294,7 @@ def main():
   fetcher.begin()
 
   offer_exports()
+
 
   mprint('Finished. Quitting.')
 
