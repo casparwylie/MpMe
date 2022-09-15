@@ -154,7 +154,7 @@ class Fetcher:
   def fetch_all_songs(self):
     mprint(f'Fetching {len(self.song_list.songs)} songs...')
     for song in self.song_list.songs:
-      if success := self.fetch_song(song):
+      if self.fetch_song(song):
         self.tag_song(song)
     mprint('Done!')
 
