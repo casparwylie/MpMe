@@ -1,12 +1,14 @@
 import abc
 import dataclasses
-import eyed3
 import os
 import platform
 import shutil
 import subprocess
 import sys
 import time
+
+import yt_dlp
+import eyed3
 
 
 #################
@@ -26,6 +28,18 @@ MAC_PLATFORM_PART = 'macOS'
 LINUX_PLATFORM_PART = 'Linux'
 
 UNSUPPORTED_OS_MSG = 'Windows? Fuck off'
+
+
+YDL_BASE_OPTS = {
+    'format': 'bestaudio/best',
+    'postprocessors': [{
+        'key': 'FFmpegExtractAudio',
+        'preferredcodec': 'mp3',
+        'preferredquality': '192',
+    }],
+    # May fix 403s according to https://stackoverflow.com/questions/32104702/youtube-dl-library-and-error-403-forbidden-when-using-generated-direct-link-by
+    # 'cachedir': False,
+}
 
 ###############
 ### HELPERS ###
@@ -148,8 +162,6 @@ class Fetcher:
     if os.path.exists(TMP_DOWNLOAD_DIR):
       shutil.rmtree(TMP_DOWNLOAD_DIR)
     os.mkdir(TMP_DOWNLOAD_DIR)
-    mprint('Updating YouTube DL...')
-    subprocess.check_output(['youtube-dl', '-U'])
 
   def fetch_all_songs(self):
     mprint(f'Fetching {len(self.song_list.songs)} songs...')
@@ -162,14 +174,12 @@ class Fetcher:
     mprint(f'Fetching {song}...')
     path = os.path.join(TMP_DOWNLOAD_DIR, song.full_name)
     for attempt in range(RETRY_ATTEMPTS):
+      ydl_opts = YDL_BASE_OPTS | {
+        'outtmpl': f'{path}.%(ext)s',
+      }
       try:
-        subprocess.check_output([
-          'youtube-dl',
-          '-x',
-          '-o', f'{path}.%(ext)s',
-          f'ytsearch:{song.search_term}',
-          '--audio-format', AUDIO_FORMAT
-        ])
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+          ydl.download([f'ytsearch:{{song.search_term}}'])
         break
       except Exception as error:
         mprint(f'Issue: {error}')
@@ -181,10 +191,9 @@ class Fetcher:
 
   def tag_song(self, song):
     eyed3_file = eyed3.load(
-      os.path.join(TMP_DOWNLOAD_DIR, song.file_name))
-
-    # Use album as MP3 Players organise these better
-    eyed3_file.tag.album = song.artist
+      os.path.join(TMP_DOWNLOAD_DIR, song.file_name)
+    )
+    eyed3_file.tag.artist = song.artist
     eyed3_file.tag.save()
 
 
