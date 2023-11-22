@@ -4,6 +4,7 @@ import os
 import platform
 import shutil
 import json
+from datetime import timedelta
 import subprocess
 import sys
 import time
@@ -16,7 +17,6 @@ import eyed3
 ### CONSTANTS ###
 #################
 PLATFORM = platform.platform()
-BAD_SONG_CHARS = ('\'', '"', '\n')
 MISC_SONG_FOLDER_NAME = 'OTHER'
 TMP_DOWNLOAD_DIR = 'downloads'
 AUDIO_FORMAT = 'mp3'
@@ -27,6 +27,7 @@ BACKUP_DIR = 'backup'
 RETRY_ATTEMPTS = 3
 MAC_PLATFORM_PART = 'macOS'
 LINUX_PLATFORM_PART = 'Linux'
+SONG_DELIM_CHAR = '~'
 RESET_DOWNLOADS_EACH_RUN = False
 
 UNSUPPORTED_OS_MSG = 'Windows? Fuck off'
@@ -83,7 +84,7 @@ class Song:
 
   @property
   def full_name(self):
-    return f'{self.name} ~ {self.artist}'
+    return f'{self.name} {SONG_DELIM_CHAR} {self.artist}'
 
   @property
   def file_name(self):
@@ -91,17 +92,7 @@ class Song:
 
   @classmethod
   def from_string(cls, string):
-    if string := cls.clean_string(string):
-      try:
-        return cls(*string.split(','))
-      except TypeError:
-        pass
-
-  @staticmethod
-  def clean_string(string):
-    for char in BAD_SONG_CHARS:
-      string = string.replace(char, '')
-    return string.strip()
+    return cls(*string.split(SONG_DELIM_CHAR))
 
   def __str__(self):
     return f'<{self.artist}: {self.name}>'
@@ -125,7 +116,7 @@ class SongList:
       choice = input(
         f'Please choose an option: {display_choices}\n:')
       try:
-        self.songs =[
+        self.songs = [
           Song.from_string(line)
           for line in sorted(options[int(choice) - 1][1]())
           if line
@@ -135,7 +126,7 @@ class SongList:
         pass
 
   def populate_from_file(self):
-    """Excepts a linear list of Title,Artists"""
+    """Excepts a linear list of Title~Artist"""
     with open(input('Enter file name path: ')) as data:
       return data.read().split('\n')
 
@@ -146,7 +137,7 @@ class SongList:
       data = json.load(data)
       for artist, titles in data.items():
         for title in titles:
-          rows.append(f"{title},{artist}")
+          rows.append(f"{title}{SONG_DELIM_CHAR}{artist}")
       return rows
 
   def populate_from_url(self):
@@ -186,10 +177,30 @@ class Fetcher:
   def fetch_all_songs(self):
     start = int(input("Start at index [0]: ") or 0)
     total = len(self.song_list.songs)
+    average_download_seconds = 0
+    total_download_seconds = 0
+    eta_seconds = 0
     for i, song in enumerate(self.song_list.songs[start:]):
-      mprint(f'[{i + start + 1}/{total}] Fetching {song}...')
+      eta_display = (
+        'eta {:0>8}'.format(str(timedelta(seconds=eta_seconds)))
+        if eta_seconds else 'eta N/A'
+      )
+      real_index = i + start
+      mprint(
+        f'[{real_index + 1}/{total} '
+        f'({eta_display})] Fetching {song}...'
+      )
+
+      start_time = time.time()
       if self.fetch_song(song):
         self.tag_song(song)
+      end_time = time.time()
+
+      duration_seconds = end_time - start_time
+      total_download_seconds += duration_seconds
+      average_download_seconds = round(total_download_seconds / (i + 1), 2)
+      eta_seconds = average_download_seconds * (total - (real_index))
+
     mprint('Done!')
     mprint('Failed...')
     for song in self.failed:
@@ -203,7 +214,6 @@ class Fetcher:
         'outtmpl': f'{path}.%(ext)s',
       }
       try:
-        raise Exception()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
           ydl.download([f'ytsearch:{song.search_term}'])
         break
