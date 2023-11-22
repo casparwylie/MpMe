@@ -28,7 +28,7 @@ MAC_PLATFORM_PART = "macOS"
 LINUX_PLATFORM_PART = "Linux"
 SONG_DELIM_CHAR = "~"
 RESET_DOWNLOADS_EACH_RUN = False
-
+DEBUG = False
 UNSUPPORTED_OS_MSG = "Windows? Fuck off"
 
 ###############
@@ -38,13 +38,12 @@ UNSUPPORTED_OS_MSG = "Windows? Fuck off"
 
 class YTDLogger:
     def debug(self, msg):
-        if msg.startswith("[debug] "):
-            pass
-        else:
-            self.info(msg)
+        if DEBUG:
+            print(msg)
 
     def info(self, msg):
-        pass
+        if DEBUG:
+            print(msg)
 
     def warning(self, msg):
         print(msg)
@@ -176,10 +175,12 @@ class Fetcher:
         self.fetch_all_songs()
 
     def prepare(self):
-        if RESET_DOWNLOADS_EACH_RUN:
-            mprint("Clearing downloads...")
-            if os.path.exists(TMP_DOWNLOAD_DIR):
+        mprint("Clearing downloads...")
+        if os.path.exists(TMP_DOWNLOAD_DIR):
+            if RESET_DOWNLOADS_EACH_RUN:
                 shutil.rmtree(TMP_DOWNLOAD_DIR)
+                os.mkdir(TMP_DOWNLOAD_DIR)
+        else:
             os.mkdir(TMP_DOWNLOAD_DIR)
 
     def fetch_all_songs(self):
@@ -221,16 +222,14 @@ class Fetcher:
             }
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([f"ytsearch:{song.search_term}"])
-                break
+                    result = ydl.download([f"ytsearch:{song.search_term}"])
+                return True
             except Exception as error:
                 mprint(f"Issue: {error}")
                 print(f"Retrying {attempt + 1}/{RETRY_ATTEMPTS}")
-        else:
-            mprint("Unable to fetch song. Skipping...")
-            self.failed.append(song)
-            return
-        return True
+        mprint("Unable to fetch song. Skipping...")
+        self.failed.append(song)
+        return False
 
     def tag_song(self, song):
         eyed3_file = eyed3.load(os.path.join(TMP_DOWNLOAD_DIR, song.file_name))
