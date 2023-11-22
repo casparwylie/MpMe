@@ -3,6 +3,7 @@ import dataclasses
 import os
 import platform
 import shutil
+import json
 import subprocess
 import sys
 import time
@@ -17,7 +18,7 @@ import eyed3
 PLATFORM = platform.platform()
 BAD_SONG_CHARS = ('\'', '"', '\n')
 MISC_SONG_FOLDER_NAME = 'OTHER'
-TMP_DOWNLOAD_DIR = '__downloads__'
+TMP_DOWNLOAD_DIR = 'downloads'
 AUDIO_FORMAT = 'mp3'
 IGNORE_DISKS = {'Macintosh HD'}
 MAC_VOLUMES_DIR = '/Volumes'
@@ -26,12 +27,37 @@ BACKUP_DIR = 'backup'
 RETRY_ATTEMPTS = 3
 MAC_PLATFORM_PART = 'macOS'
 LINUX_PLATFORM_PART = 'Linux'
+RESET_DOWNLOADS_EACH_RUN = False
 
 UNSUPPORTED_OS_MSG = 'Windows? Fuck off'
+
+###############
+### HELPERS ###
+###############
+
+class YTDLogger:
+    def debug(self, msg):
+        if msg.startswith('[debug] '):
+            pass
+        else:
+            self.info(msg)
+
+    def info(self, msg):
+        pass
+
+    def warning(self, msg):
+        print(msg)
+
+    def error(self, msg):
+        print(msg)
+
+def mprint(message):
+  print(f'\n{message}\n')
 
 
 YDL_BASE_OPTS = {
     'format': 'bestaudio/best',
+    'logger': YTDLogger(),
     'postprocessors': [{
         'key': 'FFmpegExtractAudio',
         'preferredcodec': 'mp3',
@@ -40,13 +66,6 @@ YDL_BASE_OPTS = {
     # May fix 403s according to https://stackoverflow.com/questions/32104702/youtube-dl-library-and-error-403-forbidden-when-using-generated-direct-link-by
     # 'cachedir': False,
 }
-
-###############
-### HELPERS ###
-###############
-
-def mprint(message):
-  print(f'\n{message}\n')
 
 
 ######################
@@ -64,7 +83,7 @@ class Song:
 
   @property
   def full_name(self):
-    return f'{self.name} - {self.artist}'
+    return f'{self.name} ~ {self.artist}'
 
   @property
   def file_name(self):
@@ -77,19 +96,6 @@ class Song:
         return cls(*string.split(','))
       except TypeError:
         pass
-
-  @classmethod
-  def from_file(cls, path):
-    eyed3_file = eyed3.load(path)
-    name = path.split('/')[-1].replace(
-      f'.{AUDIO_FORMAT}', '')
-    if not eyed3_file:
-      return cls(name=name, artist='')
-
-    # Use album as MP3 Players organise these better
-    artist = eyed3_file.tag.album
-    name = name.replace(f',{artist}' or '', '')
-    return cls(name=name, artist=artist)
 
   @staticmethod
   def clean_string(string):
@@ -108,6 +114,7 @@ class SongList:
   def populate(self):
     options = (
       ('from file', self.populate_from_file),
+      ('from json', self.populate_from_json),
       ('from URL', self.populate_from_url),
       ('manual', self.populate_from_input))
 
@@ -118,9 +125,9 @@ class SongList:
       choice = input(
         f'Please choose an option: {display_choices}\n:')
       try:
-        self.songs = [
+        self.songs =[
           Song.from_string(line)
-          for line in options[int(choice) - 1][1]()
+          for line in sorted(options[int(choice) - 1][1]())
           if line
         ]
         break
@@ -128,8 +135,19 @@ class SongList:
         pass
 
   def populate_from_file(self):
+    """Excepts a linear list of Title,Artists"""
     with open(input('Enter file name path: ')) as data:
       return data.read().split('\n')
+
+  def populate_from_json(self):
+    """Expects a JSON object of "Artist": ["Title 1", ...]"""
+    rows = []
+    with open(input('Enter file name path: ')) as data:
+      data = json.load(data)
+      for artist, titles in data.items():
+        for title in titles:
+          rows.append(f"{title},{artist}")
+      return rows
 
   def populate_from_url(self):
     raise Exception('Not implemented!')
@@ -152,40 +170,49 @@ class Fetcher:
 
   def __init__(self, song_list):
     self.song_list = song_list
+    self.failed = []
 
   def begin(self):
     self.prepare()
     self.fetch_all_songs()
 
   def prepare(self):
-    mprint('Clearing downloads...')
-    if os.path.exists(TMP_DOWNLOAD_DIR):
-      shutil.rmtree(TMP_DOWNLOAD_DIR)
-    os.mkdir(TMP_DOWNLOAD_DIR)
+    if RESET_DOWNLOADS_EACH_RUN:
+      mprint('Clearing downloads...')
+      if os.path.exists(TMP_DOWNLOAD_DIR):
+        shutil.rmtree(TMP_DOWNLOAD_DIR)
+      os.mkdir(TMP_DOWNLOAD_DIR)
 
   def fetch_all_songs(self):
-    mprint(f'Fetching {len(self.song_list.songs)} songs...')
-    for song in self.song_list.songs:
+    start = int(input("Start at index [0]: ") or 0)
+    total = len(self.song_list.songs)
+    for i, song in enumerate(self.song_list.songs[start:]):
+      mprint(f'[{i + start + 1}/{total}] Fetching {song}...')
       if self.fetch_song(song):
         self.tag_song(song)
     mprint('Done!')
+    mprint('Failed...')
+    for song in self.failed:
+      print(song.full_name)
+    print()
 
   def fetch_song(self, song):
-    mprint(f'Fetching {song}...')
     path = os.path.join(TMP_DOWNLOAD_DIR, song.full_name)
     for attempt in range(RETRY_ATTEMPTS):
       ydl_opts = YDL_BASE_OPTS | {
         'outtmpl': f'{path}.%(ext)s',
       }
       try:
+        raise Exception()
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-          ydl.download([f'ytsearch:{{song.search_term}}'])
+          ydl.download([f'ytsearch:{song.search_term}'])
         break
       except Exception as error:
         mprint(f'Issue: {error}')
-        mprint(f'Retrying {attempt + 1}/{RETRY_ATTEMPTS}')
+        print(f'Retrying {attempt + 1}/{RETRY_ATTEMPTS}')
     else:
       mprint('Unable to fetch song. Skipping...')
+      self.failed.append(song)
       return
     return True
 
