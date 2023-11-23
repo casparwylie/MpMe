@@ -29,11 +29,21 @@ LINUX_PLATFORM_PART = "Linux"
 SONG_DELIM_CHAR = "~"
 RESET_DOWNLOADS_EACH_RUN = False
 DEBUG = False
-UNSUPPORTED_OS_MSG = "Windows? Fuck off"
+TITLE_SHORT_CHARS = {"m", "s", "t"}
+TAGGING_ENABLED = True
+OFFER_EXPORT_FEATURES = False
+UNSUPPORTED_OS_MSG = "Windows - not sure"
 
 ###############
 ### HELPERS ###
 ###############
+
+
+def format_title(string):
+    string = string.strip().title()
+    for char in TITLE_SHORT_CHARS:
+        string = string.replace(f"'{char.upper()}", f"'{char}")
+    return string
 
 
 class YTDLogger:
@@ -56,6 +66,16 @@ def mprint(message):
     print(f"\n{message}\n")
 
 
+def prepare():
+    print("Clearing downloads...")
+    if os.path.exists(TMP_DOWNLOAD_DIR):
+        if RESET_DOWNLOADS_EACH_RUN:
+            shutil.rmtree(TMP_DOWNLOAD_DIR)
+            os.mkdir(TMP_DOWNLOAD_DIR)
+    else:
+        os.mkdir(TMP_DOWNLOAD_DIR)
+
+
 YDL_BASE_OPTS = {
     "format": "bestaudio/best",
     "logger": YTDLogger(),
@@ -69,11 +89,6 @@ YDL_BASE_OPTS = {
     # May fix 403s according to https://stackoverflow.com/questions/32104702/youtube-dl-library-and-error-403-forbidden-when-using-generated-direct-link-by
     # 'cachedir': False,
 }
-
-
-######################
-### HELPER CLASSES ###
-######################
 
 
 @dataclasses.dataclass
@@ -91,7 +106,9 @@ class Song:
 
     @property
     def full_name(self):
-        return f"{self.name} {SONG_DELIM_CHAR} {self.artist}"
+        return (
+            f"{format_title(self.name)} {SONG_DELIM_CHAR} {format_title(self.artist)}"
+        )
 
     @property
     def file_name(self):
@@ -99,15 +116,45 @@ class Song:
 
     @classmethod
     def from_string(cls, string):
-        return cls(*string.split(SONG_DELIM_CHAR))
+        string = string.strip(",").strip()
+        try:
+            return cls(*string.split(SONG_DELIM_CHAR))
+        except:
+            raise Exception(f"Failed to parse: {string}.")
 
     def __str__(self):
-        return f"<{self.artist}: {self.name}>"
+        return self.full_name
+
+    def tag(self):
+        eyed3_file = eyed3.load(os.path.join(TMP_DOWNLOAD_DIR, self.file_name))
+        eyed3_file.tag.artist = self.artist
+        eyed3_file.tag.title = self.name
+        eyed3_file.tag.save()
+
+    def fetch(self):
+        path = os.path.join(TMP_DOWNLOAD_DIR, self.full_name)
+        for attempt in range(RETRY_ATTEMPTS):
+            ydl_opts = YDL_BASE_OPTS | {
+                "outtmpl": f"{path}.%(ext)s",
+            }
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    result = ydl.download([f"ytsearch:{self.search_term}"])
+                return True
+            except Exception as error:
+                mprint(f"Issue: {error}")
+                print(f"Retrying {attempt + 1}/{RETRY_ATTEMPTS}")
+        mprint("Unable to fetch song. Skipping...")
+        return False
 
 
 class SongList:
     def __init__(self):
         self.songs = []
+        self.fetch_songs_failed = []
+
+    def __str__(self):
+        return "\n".join(str(song) for song in self.songs)
 
     def populate(self):
         options = (
@@ -126,7 +173,7 @@ class SongList:
                 self.songs = [
                     Song.from_string(line)
                     for line in sorted(options[int(choice) - 1][1]())
-                    if line
+                    if line.strip()
                 ]
                 break
             except (IndexError, ValueError):
@@ -152,55 +199,38 @@ class SongList:
 
     def populate_from_input(self):
         mprint(
-            "Paste a list of song + artist names" "(Use ENTER then ctrl D when done): "
+            "Paste a list of '<song>~<artist>' lines (Use ENTER then ctrl D when done): "
         )
         return sys.stdin.readlines()
 
-    def __str__(self):
-        return "\n".join(str(song) for song in self.songs)
+    def show_failed(self):
+        if self.fetch_songs_failed:
+            mprint("Failed...")
+            for song in self.fetch_songs_failed:
+                print(song.full_name)
+            print()
 
-
-############
-### CORE ###
-############
-
-
-class Fetcher:
-    def __init__(self, song_list):
-        self.song_list = song_list
-        self.failed = []
-
-    def begin(self):
-        self.prepare()
-        self.fetch_all_songs()
-
-    def prepare(self):
-        mprint("Clearing downloads...")
-        if os.path.exists(TMP_DOWNLOAD_DIR):
-            if RESET_DOWNLOADS_EACH_RUN:
-                shutil.rmtree(TMP_DOWNLOAD_DIR)
-                os.mkdir(TMP_DOWNLOAD_DIR)
-        else:
-            os.mkdir(TMP_DOWNLOAD_DIR)
-
-    def fetch_all_songs(self):
+    def fetch_all(self):
+        self.fetch_songs_failed = []
         start = int(input("Start at index [0]: ") or 0)
-        total = len(self.song_list.songs)
+        total = len(self.songs)
         average_download_seconds = 0
         total_download_seconds = 0
         eta_seconds = 0
-        for i, song in enumerate(self.song_list.songs[start:]):
+        for i, song in enumerate(self.songs[start:]):
+            real_index = i + start + 1
             eta_display = (
-                "eta {:0>8}".format(str(timedelta(seconds=eta_seconds)))
+                "eta {}".format(str(timedelta(seconds=eta_seconds)))[:11]
                 if eta_seconds
                 else "eta N/A"
             )
-            real_index = i + start
-            mprint(f"[{real_index + 1}/{total} " f"({eta_display})] Fetching {song}...")
+            mprint(f"[{real_index}/{total} " f"({eta_display})] Fetching {song}...")
 
             start_time = time.time()
-            if self.fetch_song(song):
-                self.tag_song(song)
+            if song.fetch() and TAGGING_ENABLED:
+                song.tag()
+            else:
+                self.fetch_songs_failed.append(song)
             end_time = time.time()
 
             duration_seconds = end_time - start_time
@@ -209,33 +239,7 @@ class Fetcher:
             eta_seconds = average_download_seconds * (total - (real_index))
 
         mprint("Done!")
-        mprint("Failed...")
-        for song in self.failed:
-            print(song.full_name)
-        print()
-
-    def fetch_song(self, song):
-        path = os.path.join(TMP_DOWNLOAD_DIR, song.full_name)
-        for attempt in range(RETRY_ATTEMPTS):
-            ydl_opts = YDL_BASE_OPTS | {
-                "outtmpl": f"{path}.%(ext)s",
-            }
-            try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    result = ydl.download([f"ytsearch:{song.search_term}"])
-                return True
-            except Exception as error:
-                mprint(f"Issue: {error}")
-                print(f"Retrying {attempt + 1}/{RETRY_ATTEMPTS}")
-        mprint("Unable to fetch song. Skipping...")
-        self.failed.append(song)
-        return False
-
-    def tag_song(self, song):
-        eyed3_file = eyed3.load(os.path.join(TMP_DOWNLOAD_DIR, song.file_name))
-        eyed3_file.tag.artist = song.artist
-        eyed3_file.tag.title = song.name
-        eyed3_file.tag.save()
+        self.show_failed()
 
 
 class Exporter(abc.ABC):
@@ -309,11 +313,11 @@ EXPORTERS = (
 
 
 def offer_exports():
-    for exporter in EXPORTERS:
-        export = (input(f"Export to {exporter.name} [y]: ") or "y") == "y"
-        if export:
-            exporter().export()
-            mprint("Done!")
+    if OFFER_EXPORT_FEATURES:
+        for exporter in EXPORTERS:
+            if input(f"Export to {exporter.name} [y/N]: ") == "y":
+                exporter().export()
+                mprint("Done!")
 
 
 ############
@@ -325,23 +329,18 @@ def show_introduction():
     print(
         """
 ** Welcome to MPME! **
-
 Scan, download and export music to an external source.
-
-Ready? Hit Enter!
-    """
+"""
     )
-    input()
 
 
 def main():
     show_introduction()
+    prepare()
 
     song_list = SongList()
     song_list.populate()
-
-    fetcher = Fetcher(song_list)
-    fetcher.begin()
+    song_list.fetch_all()
 
     offer_exports()
 
