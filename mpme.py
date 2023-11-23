@@ -234,6 +234,7 @@ class Fetcher:
     def tag_song(self, song):
         eyed3_file = eyed3.load(os.path.join(TMP_DOWNLOAD_DIR, song.file_name))
         eyed3_file.tag.artist = song.artist
+        eyed3_file.tag.title = song.name
         eyed3_file.tag.save()
 
 
