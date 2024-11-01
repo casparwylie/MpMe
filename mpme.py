@@ -33,6 +33,7 @@ TITLE_SHORT_CHARS = {"m", "s", "t"}
 TAGGING_ENABLED = True
 OFFER_EXPORT_FEATURES = False
 UNSUPPORTED_OS_MSG = "Windows - not sure"
+BIG_FILE_MB = 30
 
 ###############
 ### HELPERS ###
@@ -93,11 +94,14 @@ YDL_BASE_OPTS = {
 
 @dataclasses.dataclass
 class Song:
+    yid: str | None
     name: str
     artist: str
 
     @property
     def search_term(self):
+        if self.yid:
+          return self.yid
         return (
             f"{self.name} {self.artist}"
             if self.artist != MISC_ARTIST_NAME
@@ -114,19 +118,34 @@ class Song:
     def file_name(self):
         return f"{self.full_name}.{AUDIO_FORMAT}"
 
+    @property
+    def full_path(self):
+        return os.path.join(TMP_DOWNLOAD_DIR, self.file_name)
+
+    @property
+    def size_mb(self):
+        try:
+          file_stats = os.stat(self.full_path)
+          return file_stats.st_size / (1204 * 1204)
+        except:
+          return -1
+
     @classmethod
     def from_string(cls, string):
         string = string.strip(",").strip()
-        try:
-            return cls(*string.split(SONG_DELIM_CHAR))
-        except:
+        match string.split(SONG_DELIM_CHAR):
+          case (yid, name, artist):
+            return cls(yid=yid, name=name, artist=artist)
+          case (name, artist):
+            return cls(yid=None, name=name, artist=artist)
+          case _:
             raise Exception(f"Failed to parse: {string}.")
 
     def __str__(self):
         return self.full_name
 
     def tag(self):
-        eyed3_file = eyed3.load(os.path.join(TMP_DOWNLOAD_DIR, self.file_name))
+        eyed3_file = eyed3.load(self.full_path)
         eyed3_file.tag.artist = self.artist
         eyed3_file.tag.title = self.name
         eyed3_file.tag.save()
@@ -152,6 +171,7 @@ class SongList:
     def __init__(self):
         self.songs = []
         self.fetch_songs_failed = []
+        self.fetch_songs_big = []
 
     def __str__(self):
         return "\n".join(str(song) for song in self.songs)
@@ -203,6 +223,13 @@ class SongList:
         )
         return sys.stdin.readlines()
 
+    def show_big(self):
+        if self.fetch_songs_big:
+            mprint("Big files...")
+            for song in self.fetch_songs_big:
+                print(f"{round(song.size_mb, 2)}MB: {song.full_name}")
+            print()
+
     def show_failed(self):
         if self.fetch_songs_failed:
             mprint("Failed...")
@@ -227,10 +254,14 @@ class SongList:
             mprint(f"[{real_index}/{total} " f"({eta_display})] Fetching {song}...")
 
             start_time = time.time()
+
             if song.fetch() and TAGGING_ENABLED:
                 song.tag()
             else:
                 self.fetch_songs_failed.append(song)
+            if song.size_mb > BIG_FILE_MB:
+              self.fetch_songs_big.append(song)
+
             end_time = time.time()
 
             duration_seconds = end_time - start_time
@@ -240,6 +271,7 @@ class SongList:
 
         mprint("Done!")
         self.show_failed()
+        self.show_big()
 
 
 class Exporter(abc.ABC):
