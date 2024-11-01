@@ -22,7 +22,7 @@ AUDIO_FORMAT = "mp3"
 IGNORE_DISKS = {"Macintosh HD"}
 MAC_VOLUMES_DIR = "/Volumes"
 LINUX_MOUNT_DIR = "/mnt"
-BACKUP_DIR = "backup"
+LOCAL_EXPORT_DIR = os.environ.get("MPME_LOCAL_EXPORT_DIR")
 RETRY_ATTEMPTS = 3
 MAC_PLATFORM_PART = "macOS"
 LINUX_PLATFORM_PART = "Linux"
@@ -31,7 +31,7 @@ RESET_DOWNLOADS_EACH_RUN = True
 DEBUG = False
 TITLE_SHORT_CHARS = {"m", "s", "t"}
 TAGGING_ENABLED = True
-OFFER_EXPORT_FEATURES = False
+OFFER_EXPORT_FEATURES = True
 UNSUPPORTED_OS_MSG = "Windows - not sure"
 BIG_FILE_MB = 30
 
@@ -321,12 +321,21 @@ class ExternalDiskExporter(Exporter):
 
 class LocalExporter(Exporter):
 
-    name = "Local (backup)"
+    name = "Local Folder"
 
     def export(self):
-        if not os.path.exists(BACKUP_DIR):
-            os.mkdir(BACKUP_DIR)
-        shutil.copytree(TMP_DOWNLOAD_DIR, BACKUP_DIR, dirs_exist_ok=True)
+        if not LOCAL_EXPORT_DIR:
+          print("Please set MPME_LOCAL_EXPORT_DIR environment variable.")
+          return
+        if not os.path.exists(LOCAL_EXPORT_DIR):
+            print("Folder does not exist. Creating.")
+            os.mkdir(LOCAL_EXPORT_DIR)
+        try:
+          shutil.copytree(TMP_DOWNLOAD_DIR, LOCAL_EXPORT_DIR, dirs_exist_ok=True)
+        except shutil.Error:
+          # Apparently it's okay...
+          # https://stackoverflow.com/questions/36564646/why-python-shutil-copytree-is-working-but-it-has-error
+          pass
 
 
 class GoogleDriveExporter(Exporter):
@@ -338,8 +347,8 @@ class GoogleDriveExporter(Exporter):
 
 
 EXPORTERS = (
-    ExternalDiskExporter,
     LocalExporter,
+    ExternalDiskExporter,
     GoogleDriveExporter,
 )
 
