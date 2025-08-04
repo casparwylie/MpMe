@@ -9,6 +9,8 @@ readme = "README.md"
 python = "^3.11"
 eyed3 = "^0.9.7"
 yt-dlp = "*"
+google-api-python-client = "^2.177.0"
+google-auth-oauthlib = "^1.2.2"
 
 
 [build-system]

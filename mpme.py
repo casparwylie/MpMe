@@ -6,11 +6,20 @@ import platform
 import shutil
 import subprocess
 import sys
+import logging
 import time
 from datetime import timedelta
 
 import eyed3
 import yt_dlp
+from google.oauth2.credentials import Credentials
+from google.auth.transport.requests import Request
+from google_auth_oauthlib.flow import InstalledAppFlow
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaFileUpload
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+
 
 #################
 ### CONSTANTS ###
@@ -21,11 +30,13 @@ TMP_DOWNLOAD_DIR = "downloads"
 AUDIO_FORMAT = "mp3"
 IGNORE_DISKS = {"Macintosh HD"}
 MAC_VOLUMES_DIR = "/Volumes"
+LINUX_IOS_PATH = "/run/user/1000/gvfs"
+IOS_MUSIC_PATH = "org.videolan.vlc-ios/Music"
 LINUX_MOUNT_DIR = "/mnt"
-LOCAL_EXPORT_DIR = os.environ.get("MPME_LOCAL_EXPORT_DIR")
+LOCAL_EXPORT_DIR = "previous_downloads"
 RETRY_ATTEMPTS = 3
-MAC_PLATFORM_PART = "macOS"
-LINUX_PLATFORM_PART = "Linux"
+IS_LINUX = "Linux" in PLATFORM
+IS_MAC = "macOS" in PLATFORM
 SONG_DELIM_CHAR = "~"
 RESET_DOWNLOADS_EACH_RUN = True
 DEBUG = False
@@ -34,6 +45,7 @@ TAGGING_ENABLED = True
 OFFER_EXPORT_FEATURES = True
 UNSUPPORTED_OS_MSG = "Windows - not sure"
 BIG_FILE_MB = 30
+GDRIVE_FOLDER = "1MStG8IMb_qnzLjDOCSHThl4dD-F1XWF7"
 
 ###############
 ### HELPERS ###
@@ -49,26 +61,19 @@ def format_title(string):
 
 class YTDLogger:
     def debug(self, msg):
-        if DEBUG:
-            print(msg)
+        logging.debug(msg)
 
     def info(self, msg):
-        if DEBUG:
-            print(msg)
+        logging.info(msg)
 
     def warning(self, msg):
-        print(msg)
+        logging.warning(msg)
 
     def error(self, msg):
-        print(msg)
-
-
-def mprint(message):
-    print(f"\n{message}\n")
-
+        logging.error(msg)
 
 def prepare():
-    print("Clearing downloads...")
+    logging.info("Clearing downloads...")
     if os.path.exists(TMP_DOWNLOAD_DIR):
         if RESET_DOWNLOADS_EACH_RUN:
             shutil.rmtree(TMP_DOWNLOAD_DIR)
@@ -83,7 +88,7 @@ YDL_BASE_OPTS = {
     "postprocessors": [
         {
             "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
+            "preferredcodec": AUDIO_FORMAT,
             "preferredquality": "192",
         }
     ],
@@ -161,9 +166,9 @@ class Song:
                     result = ydl.download([f"ytsearch:{self.search_term}"])
                 return True
             except Exception as error:
-                mprint(f"Issue: {error}")
-                print(f"Retrying {attempt + 1}/{RETRY_ATTEMPTS}")
-        mprint("Unable to fetch song. Skipping...")
+                logging.warning(f"Issue: {error}")
+                logging.warning(f"Retrying {attempt + 1}/{RETRY_ATTEMPTS}")
+        logging.warning("Unable to fetch song. Skipping...")
         return False
 
 
@@ -218,24 +223,22 @@ class SongList:
         raise Exception("Not implemented!")
 
     def populate_from_input(self):
-        mprint(
+        logging.info(
             "Paste a list of '<song>~<artist>' lines (Use ENTER then ctrl D when done): "
         )
         return sys.stdin.readlines()
 
     def show_big(self):
         if self.fetch_songs_big:
-            mprint("Big files...")
+            logging.warning("Big files...")
             for song in self.fetch_songs_big:
-                print(f"{round(song.size_mb, 2)}MB: {song.full_name}")
-            print()
+                logging.warning(f"{round(song.size_mb, 2)}MB: {song.full_name}")
 
     def show_failed(self):
         if self.fetch_songs_failed:
-            mprint("Failed...")
+            logging.warning("Failed...")
             for song in self.fetch_songs_failed:
-                print(song.full_name)
-            print()
+                logging.warning(song.full_name)
 
     def fetch_all(self):
         self.fetch_songs_failed = []
@@ -251,7 +254,7 @@ class SongList:
                 if eta_seconds
                 else "eta N/A"
             )
-            mprint(f"[{real_index}/{total} " f"({eta_display})] Fetching {song}...")
+            logging.info(f"[{real_index}/{total} " f"({eta_display})] Fetching {song}...")
 
             start_time = time.time()
 
@@ -269,14 +272,14 @@ class SongList:
             average_download_seconds = round(total_download_seconds / (i + 1), 2)
             eta_seconds = average_download_seconds * (total - (real_index))
 
-        mprint("Done!")
+        logging.info("Done!")
         self.show_failed()
         self.show_big()
 
 
 class Exporter(abc.ABC):
     @abc.abstractmethod
-    def export(self):
+    def export(self, song_list):
         ...
 
 
@@ -286,22 +289,22 @@ class ExternalDiskExporter(Exporter):
 
     def export(self):
         disk_name = self.find_disks()
-        if LINUX_PLATFORM_PART in PLATFORM:
+        if IS_LINUX:
             subprocess.check_call(["mount", f"/dev/{disk_name}", LINUX_MOUNT_DIR])
             path = LINUX_MOUNT_DIR
-        elif MAC_PLATFORM_PART in PLATFORM:
+        elif IS_MAC:
             path = os.path.join(MAC_VOLUMES_DIR, disk_name)
         else:
             raise Exception(UNSUPPORTED_OS_MSG)
-        print("Exporting songs to disk...")
+        logging.info("Exporting songs to disk...")
         shutil.copytree(TMP_DOWNLOAD_DIR, path, dirs_exist_ok=True)
 
     def find_disks(self):
-        mprint("Searching for disks...")
         while True:
-            if LINUX_PLATFORM_PART in PLATFORM:
+            logging.info("Searching for disks...")
+            if IS_LINUX:
                 available_disks = {disk for disk in os.listdir("/dev") if "sd" in disk}
-            elif MAC_PLATFORM_PART in PLATFORM:
+            elif IS_MAC:
                 available_disks = set(os.listdir(MAC_VOLUMES_DIR))
             else:
                 raise Exception(UNSUPPORTED_OS_MSG)
@@ -324,41 +327,111 @@ class LocalExporter(Exporter):
     name = "Local Folder"
 
     def export(self):
-        if not LOCAL_EXPORT_DIR:
-          print("Please set MPME_LOCAL_EXPORT_DIR environment variable.")
-          return
-        if not os.path.exists(LOCAL_EXPORT_DIR):
-            print("Folder does not exist. Creating.")
-            os.mkdir(LOCAL_EXPORT_DIR)
+        local_export_dir = LOCAL_EXPORT_DIR or input("Enter directory full path: ")
+        if not os.path.exists(local_export_dir):
+            logging.info("Folder does not exist. Creating.")
+            os.mkdir(local_export_dir)
         try:
-          shutil.copytree(TMP_DOWNLOAD_DIR, LOCAL_EXPORT_DIR, dirs_exist_ok=True)
+          shutil.copytree(TMP_DOWNLOAD_DIR, local_export_dir, dirs_exist_ok=True)
         except shutil.Error:
           # Apparently it's okay...
           # https://stackoverflow.com/questions/36564646/why-python-shutil-copytree-is-working-but-it-has-error
           pass
 
 
+class IOSExporter(Exporter):
+
+    name = "IOS Device"
+
+    def export(self):
+      if IS_LINUX:
+        while True:
+          logging.info("Searching for iOS device...")
+          ios_device = None
+          for directory in os.listdir(LINUX_IOS_PATH):
+            if directory.startswith("afc"):
+              ios_device = directory
+              break
+          if ios_device:
+            break
+          time.sleep(1)
+        logging.info("Found device!")
+        try:
+          shutil.copytree(
+            TMP_DOWNLOAD_DIR,
+            os.path.join(LINUX_IOS_PATH, ios_device, IOS_MUSIC_PATH),
+            dirs_exist_ok=True,
+          )
+        except shutil.Error:
+          # Apparently it's okay...
+          # https://stackoverflow.com/questions/36564646/why-python-shutil-copytree-is-working-but-it-has-error
+          pass
+      else:
+        raise Exception(UNSUPPORTED_OS_MSG)
+
 class GoogleDriveExporter(Exporter):
 
     name = "Google Drive"
+    api_key_file = ".mpme-google-key.json"
+    token_file = ".gcptoken.json"
+    client = None
 
     def export(self):
-        raise Exception("Not implemented!")
+      if not (client := self.auth()):
+        return
+      self.client = client
+      for filename in os.listdir(TMP_DOWNLOAD_DIR):
+        logging.info(f"Uploading {filename}")
+        self.upload_file(filename)
+
+    def auth(self):
+      creds = None
+      scopes = ["https://www.googleapis.com/auth/drive.file"]
+      if os.path.exists(self.token_file):
+          creds = Credentials.from_authorized_user_file(self.token_file, scopes)
+      if not creds or not creds.valid:
+          if creds and creds.expired and creds.refresh_token:
+              creds.refresh(Request())
+          else:
+              flow = InstalledAppFlow.from_client_secrets_file(self.api_key_file, scopes)
+              creds = flow.run_local_server(port=0)
+          with open(self.token_file, 'w') as token_file:
+              token_file.write(creds.to_json())
+      return build('drive', 'v3', credentials=creds)
+
+    def upload_file(self, filename):
+      file_metadata = {
+          "name": filename,
+          "parents": [GDRIVE_FOLDER]
+      }
+      media = MediaFileUpload(
+        os.path.join(TMP_DOWNLOAD_DIR, filename),
+        mimetype=f"audio/{AUDIO_FORMAT}"
+      )
+      self.client.files().create(
+          body=file_metadata,
+          media_body=media,
+          fields='id'
+      ).execute()
+
+
 
 
 EXPORTERS = (
     LocalExporter,
     ExternalDiskExporter,
     GoogleDriveExporter,
+    IOSExporter,
 )
 
 
 def offer_exports():
-    if OFFER_EXPORT_FEATURES:
-        for exporter in EXPORTERS:
-            if input(f"Export to {exporter.name} [y/N]: ") == "y":
-                exporter().export()
-                mprint("Done!")
+    if not OFFER_EXPORT_FEATURES:
+      return
+    for exporter in EXPORTERS:
+        if input(f"Export to {exporter.name} [y/N]: ") == "y":
+            exporter().export()
+            logging.info("Done!")
 
 
 ############
@@ -367,7 +440,7 @@ def offer_exports():
 
 
 def show_introduction():
-    print(
+    logging.info(
         """
 ** Welcome to MPME! **
 Scan, download and export music to an external source.
@@ -377,15 +450,16 @@ Scan, download and export music to an external source.
 
 def main():
     show_introduction()
-    prepare()
 
-    song_list = SongList()
-    song_list.populate()
-    song_list.fetch_all()
+    if '--export' not in sys.argv:
+      prepare()
+      song_list = SongList()
+      song_list.populate()
+      song_list.fetch_all()
 
     offer_exports()
 
-    mprint("Finished. Quitting.")
+    logging.info("Finished. Quitting.")
 
 
 if __name__ == "__main__":
