@@ -14,6 +14,7 @@ import eyed3
 import yt_dlp
 from google.oauth2.credentials import Credentials
 from google.auth.transport.requests import Request
+from google.auth.exceptions import RefreshError
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
@@ -164,6 +165,7 @@ class Song:
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     result = ydl.download([f"ytsearch:{self.search_term}"])
+                    print(result, self.search_term)
                 return True
             except Exception as error:
                 logging.warning(f"Issue: {error}")
@@ -391,8 +393,12 @@ class GoogleDriveExporter(Exporter):
           creds = Credentials.from_authorized_user_file(self.token_file, scopes)
       if not creds or not creds.valid:
           if creds and creds.expired and creds.refresh_token:
-              creds.refresh(Request())
-          else:
+              try:
+                  creds.refresh(Request())
+              except RefreshError:
+                  logging.info("Google token expired or revoked, re-authenticating")
+                  creds = None
+          if not creds or not creds.valid:
               flow = InstalledAppFlow.from_client_secrets_file(self.api_key_file, scopes)
               creds = flow.run_local_server(port=0)
           with open(self.token_file, 'w') as token_file:
